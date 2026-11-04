@@ -355,8 +355,7 @@ class FileFieldsToFilesTableMigration(Migration):
                 ui.print_(f"Moving file fields of {total} {table}...")
             tx.mutate(
                 f"""
-                INSERT OR IGNORE INTO {files_table}
-                    ({joined.foreign_key}, {columns})
+                INSERT INTO {files_table} ({joined.foreign_key}, {columns})
                 SELECT id, {columns} FROM {table}
                 """
             )

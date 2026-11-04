@@ -700,13 +700,18 @@ class Model(ABC, Generic[D]):
 
             # Joined table update. The row is created if it does not exist.
             if joined_values and (joined := self._joined):
-                columns = [joined.foreign_key, *joined_values]
-                updates = ",".join(f"{k}=excluded.{k}" for k in joined_values)
+                table, key = joined.model._table, joined.foreign_key
+                assignments = ",".join(f"{k}=?" for k in joined_values)
                 tx.mutate(
-                    f"INSERT INTO {joined.model._table} ({','.join(columns)}) "
-                    f"VALUES ({','.join('?' * len(columns))}) "
-                    f"ON CONFLICT ({joined.foreign_key}) DO UPDATE SET {updates}",
-                    [self.id, *joined_values.values()],
+                    f"UPDATE {table} SET {assignments} WHERE {key}=?",
+                    [*joined_values.values(), self.id],
+                )
+                columns = ",".join([key, *joined_values])
+                tx.mutate(
+                    f"INSERT INTO {table} ({columns}) "
+                    f"SELECT {','.join('?' * (len(joined_values) + 1))} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {key}=?)",
+                    [self.id, *joined_values.values(), self.id],
                 )
 
             # Modified/added flexible attributes.
@@ -1458,9 +1463,8 @@ class Database:
         """Create indices for the given table if they don't exist."""
         with self.transaction() as tx:
             for index in indices:
-                unique = "UNIQUE " if index.unique else ""
                 tx.script(
-                    f"CREATE {unique}INDEX IF NOT EXISTS {index.name} "
+                    f"CREATE INDEX IF NOT EXISTS {index.name} "
                     f"ON {table} ({', '.join(index.columns)});"
                 )
 
@@ -1599,15 +1603,14 @@ class Index(NamedTuple):
 
     name: str
     columns: tuple[str, ...]
-    unique: bool = False
 
 
 class JoinedTable(NamedTuple):
     """Describe a table that stores some of another model's fixed fields.
 
     `model` describes the table, and its `foreign_key` column holds the id
-    of the object a row belongs to. The column needs a unique index: each
-    object has at most one row in the table.
+    of the object a row belongs to. Each object has at most one row in the
+    table.
 
     The owning model lists the shared fields in its own `_fields`, so they
     behave like any other fixed field: they are loaded with the object,

@@ -639,7 +639,7 @@ class JoinedModelFixture(ModelFixture1):
         "joined_one": dbcore.types.INTEGER,
         "joined_two": dbcore.types.STRING,
     }
-    _indices = (Index("joined_owner_id", ("owner_id",), unique=True),)
+    _indices = (Index("joined_owner_id", ("owner_id",)),)
 
 
 class OwnerModelFixture(ModelFixture1):
@@ -677,7 +677,7 @@ class TestJoinedTable:
             "field_two",
         }
         assert self.rows(db, "PRAGMA index_list(joined)") == [
-            (0, "joined_owner_id", 1, "c", 0)
+            (0, "joined_owner_id", 0, "c", 0)
         ]
 
     def test_add_and_load(self, db):
@@ -698,10 +698,12 @@ class TestJoinedTable:
         model.add(db)
         model.joined_one = 3
         model.store()
+        model.joined_two = "x"
+        model.store()
 
-        assert self.rows(db, "SELECT owner_id, joined_one FROM joined") == [
-            (1, 3)
-        ]
+        assert self.rows(
+            db, "SELECT owner_id, joined_one, joined_two FROM joined"
+        ) == [(1, 3, "x")]
 
     def test_store_creates_missing_joined_row(self, db):
         with db.transaction() as tx:

@@ -728,7 +728,7 @@ class File(dbcore.Model["Library"]):
     _fields: ClassVar[dict[str, types.Type]] = {
         f: TYPE_BY_FIELD[f] for f in sorted(_field_names)
     }
-    _indices = (dbcore.Index("idx_file_item_id", ("item_id",), unique=True),)
+    _indices = (dbcore.Index("idx_file_item_id", ("item_id",)),)
 
     @classmethod
     def _getters(cls) -> dict[str, Callable[[Self], object]]:
