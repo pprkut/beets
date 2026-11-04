@@ -407,6 +407,8 @@ class TestFileFieldsToFilesTableMigration(MigrationTestHelper):
             format="FLAC",
             bitrate=900000,
             mtime=12345.0,
+            bpm=120,
+            rg_track_gain=-6.5,
             title="the title",
             flexattr="flex value",
         )
@@ -435,6 +437,8 @@ class TestFileFieldsToFilesTableMigration(MigrationTestHelper):
         assert migrated.path == item.path
         assert migrated.format == "FLAC"
         assert migrated.mtime == 12345.0
+        assert migrated.bpm == 120
+        assert migrated.rg_track_gain == -6.5
         assert migrated.title == "the title"
         assert migrated.flexattr == "flex value"
         assert len(self.lib.items("format:MP3")) == 1

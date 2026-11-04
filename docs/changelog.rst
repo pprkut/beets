@@ -158,12 +158,13 @@ For plugin developers
 - New ``Library.contains`` method replaces the ``lib.directory in
   util.ancestry(item.path)`` idiom for testing whether a path or a model lives
   inside the library.
-- The fields describing an item's media file (``path``, ``mtime`` and the audio
-  properties such as ``format``, ``bitrate`` and ``length``) are now stored in a
-  new ``files`` table instead of the ``items`` table. Items expose and store
-  them as before, so only plugins that access the database with SQL directly
-  need updating. ``dbcore`` models support this through the new
-  ``Model._joined`` attribute. :bug:`1640`
+- The fields describing an item's media file are now stored in a new ``files``
+  table instead of the ``items`` table: ``path``, ``mtime``, the audio stream
+  properties such as ``format``, ``bitrate`` and ``length``, and the values
+  measured from the audio, such as ReplayGain, ``bpm`` and ``initial_key``.
+  Items expose and store them as before, so only plugins that access the
+  database with SQL directly need updating. ``dbcore`` models support this
+  through the new ``Model._joined`` attribute. :bug:`1640`
 
 Other changes
 ~~~~~~~~~~~~~
@@ -175,8 +176,8 @@ Other changes
   case-insensitively, so ``jpg`` also covers ``cover.JPG``.
 - The library database moves the fields describing each item's file to a new
   table when it is first opened with this version. This prepares for keeping
-  several files, for example in different formats, for the same track.
-  :bug:`1640`
+  several files for the same track, for example in different formats or as
+  separate parts. :bug:`1640`
 
 2.14.1 (September 17, 2026)
 ---------------------------

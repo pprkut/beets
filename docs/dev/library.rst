@@ -84,9 +84,11 @@ In terms of the underlying SQLite database, items are backed by two tables. The
 items table has one column per metadata field describing the track. The fields
 describing the media file itself are stored in the files table instead, in the
 row whose ``item_id`` column refers to the item. These are the file's ``path``
-and ``mtime``, and the audio properties that cannot be written as tags, such as
-``format``, ``bitrate`` and ``length``. Flexible attributes are stored in the
-item_attributes table.
+and ``mtime``, the properties of its audio stream, such as ``format``,
+``bitrate`` and ``length``, and the values measured from the audio, such as
+ReplayGain, ``bpm`` and ``initial_key``. All of these may differ between files
+of the same track, for example when it is kept in several formats or split into
+several parts. Flexible attributes are stored in the item_attributes table.
 
 The metadata fields currently in use are listed in ``models.py``: all of them in
 ``Item._fields``, and those stored in the files table in ``File._fields``. Items

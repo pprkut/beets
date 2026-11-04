@@ -1750,3 +1750,16 @@ class TestParseQuery:
     def test_parse_bytes(self):
         with pytest.raises(AssertionError):
             beets.library.parse_query_string(b"query", None)
+
+
+class TestFileFields(PytestItemHelper):
+    def test_album_value_is_stored_for_items(self, item_in_db):
+        album = self.lib.add_album([item_in_db])
+        album.rg_album_gain = -7.0
+        album.store(inherit=True)
+
+        stored = self.lib._connection().execute(
+            "select rg_album_gain from files where item_id=?", (item_in_db.id,)
+        )
+        assert stored.fetchone()[0] == -7.0
+        assert self.lib.get_item(item_in_db.id).rg_album_gain == -7.0

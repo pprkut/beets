@@ -684,8 +684,10 @@ class File(dbcore.Model["Library"]):
     """The media file holding the audio of an :class:`Item`.
 
     This stores what belongs to the file rather than to the track: its
-    location, modification time, and the audio properties that cannot be
-    written as tags.
+    location and modification time, the properties of its audio stream, and
+    the values measured from the audio, such as loudness, tempo and key.
+    These may differ between files of the same track, for example when the
+    track is kept in several formats or split into several parts.
 
     Each item has one file. Its fields are accessed through the item
     (``item.path``, ``item.bitrate``, ...) and stored by ``item.store()``.
@@ -696,19 +698,32 @@ class File(dbcore.Model["Library"]):
     _table = "files"
     _flex_table = "file_attributes"
     _field_names: ClassVar[set[str]] = {
+        "id",
+        "item_id",
+        # Location.
+        "mtime",
+        "path",
+        # Audio stream.
         "bitdepth",
         "bitrate",
         "bitrate_mode",
         "channels",
+        "encoder",
         "encoder_info",
         "encoder_settings",
         "format",
-        "id",
-        "item_id",
         "length",
-        "mtime",
-        "path",
         "samplerate",
+        # Measured from the audio.
+        "acoustid_fingerprint",
+        "bpm",
+        "initial_key",
+        "r128_album_gain",
+        "r128_track_gain",
+        "rg_album_gain",
+        "rg_album_peak",
+        "rg_track_gain",
+        "rg_track_peak",
     }
     _fields: ClassVar[dict[str, types.Type]] = {
         f: TYPE_BY_FIELD[f] for f in sorted(_field_names)
