@@ -7,8 +7,12 @@ import pytest
 
 from beets.dbcore import types
 from beets.library import Album, Item, migrations
+from beets.library.models import File
 from beets.test.helper import TestHelper
 from beets.util import cached_classproperty, path_as_posix
+
+# The current storage layout, restored after setting up a legacy library.
+ITEM_JOINED = Item._joined
 
 Migration = tuple[
     type[migrations.Migration], tuple[type[Item] | type[Album], ...]
@@ -274,6 +278,11 @@ class TestRelativePathMigration(MigrationTestHelper):
 
     migration = (migrations.RelativePathMigration, (Item,))
 
+    @classmethod
+    def setup_previous_state(cls, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Store file fields in the items table, as before the files table."""
+        monkeypatch.setattr("beets.library.models.Item._joined", None)
+
     def test_migrate(self):
         """Ensure stored paths become relative while the public API stays stable."""
         relative_path = str(Path("foo") / "bar" / "baz.mp3")
@@ -375,3 +384,109 @@ class TestInstrumentalLyricsInFlexFieldMigration(MigrationTestHelper):
         assert self.lib.migration_exists(
             "instrumental_lyrics_in_flex_field", "items"
         )
+
+
+class TestFileFieldsToFilesTableMigration(MigrationTestHelper):
+    """Verify file fields move from the items table to the files table."""
+
+    migration = (migrations.FileFieldsToFilesTableMigration, (Item,))
+
+    @classmethod
+    def setup_previous_state(cls, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Store file fields in the items table, as before the files table."""
+        monkeypatch.setattr("beets.library.models.Item._joined", None)
+
+    def items_columns(self) -> set[str]:
+        rows = self.lib._connection().execute("PRAGMA table_info(items)")
+        return {r["name"] for r in rows}
+
+    def test_migrate(self, monkeypatch):
+        """Ensure file fields are moved and the items keep their values."""
+        item = self.add_item(
+            path=self.lib_path / "a.flac",
+            format="FLAC",
+            bitrate=900000,
+            mtime=12345.0,
+            title="the title",
+            flexattr="flex value",
+        )
+        self.add_item(path=self.lib_path / "b.mp3", format="MP3")
+        assert "path" in self.items_columns()
+
+        monkeypatch.setattr("beets.library.models.Item._joined", ITEM_JOINED)
+        self.lib._migrate()
+
+        assert not Item._joined_fields() & self.items_columns()
+        assert (
+            not Item._joined_fields() & self.lib.db_tables["items"]["columns"]
+        )
+        freelist = self.lib._connection().execute("PRAGMA freelist_count")
+        assert freelist.fetchone()[0] == 0
+        rows = self.lib._connection().execute(
+            "SELECT item_id, format, bitrate FROM files ORDER BY item_id"
+        )
+        assert [tuple(r) for r in rows] == [
+            (item.id, "FLAC", 900000),
+            (item.id + 1, "MP3", 0),
+        ]
+
+        migrated = self.lib.get_item(item.id)
+        assert migrated
+        assert migrated.path == item.path
+        assert migrated.format == "FLAC"
+        assert migrated.mtime == 12345.0
+        assert migrated.title == "the title"
+        assert migrated.flexattr == "flex value"
+        assert len(self.lib.items("format:MP3")) == 1
+
+        del self.lib.db_tables
+        assert self.lib.migration_exists("file_fields_to_files_table", "items")
+
+    def test_migrate_keeps_table_structure(self, monkeypatch):
+        """Ensure the rebuilt items table keeps other columns and indices."""
+        self.lib._connection().execute("ALTER TABLE items ADD COLUMN legacy")
+        self.lib._connection().execute(
+            "CREATE INDEX idx_item_path ON items (path)"
+        )
+        item = self.add_item(path=self.lib_path / "a.flac", album_id=3)
+
+        monkeypatch.setattr("beets.library.models.Item._joined", ITEM_JOINED)
+        self.lib._migrate()
+
+        assert "legacy" in self.items_columns()
+        indices = {
+            r["name"]
+            for r in self.lib._connection().execute("PRAGMA index_list(items)")
+        }
+        assert indices == {"idx_item_album_id"}
+        pk = [
+            r["name"]
+            for r in self.lib._connection().execute("PRAGMA table_info(items)")
+            if r["pk"]
+        ]
+        assert pk == ["id"]
+
+        new_item = self.add_item(path=self.lib_path / "b.flac")
+        assert new_item.id == item.id + 1
+        assert len(self.lib.items("album_id:3")) == 1
+
+
+def test_files_table_migration_on_new_library():
+    """Ensure a new library stores file fields in the files table only."""
+    helper = TestHelper()
+    helper.setup_beets()
+    try:
+        columns = {
+            r["name"]
+            for r in helper.lib._connection().execute(
+                "PRAGMA table_info(items)"
+            )
+        }
+        assert not Item._joined_fields() & columns
+        del helper.lib.db_tables
+        assert helper.lib.migration_exists(
+            "file_fields_to_files_table", "items"
+        )
+        assert set(File._fields) <= helper.lib.db_tables["files"]["columns"]
+    finally:
+        helper.teardown_beets()

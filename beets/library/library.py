@@ -19,7 +19,7 @@ from beets.util import normpath
 from beets.util.pathformats import get_path_formats
 
 from . import migrations
-from .models import Album, Item
+from .models import Album, File, Item
 from .queries import parse_query_parts, parse_query_string
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 class Library(dbcore.Database):
     """A database of music containing songs and albums."""
 
-    _models = (Item, Album)
+    _models = (Item, File, Album)
     _migrations = (
         (migrations.MultiGenreFieldMigration, (Item, Album)),
         (migrations.LyricsMetadataInFlexFieldsMigration, (Item,)),
@@ -48,6 +48,7 @@ class Library(dbcore.Database):
         (migrations.RelativePathMigration, (Item, Album)),
         (migrations.RemoveInheritedArtpathMigration, (Item,)),
         (migrations.InstrumentalLyricsInFlexFieldMigration, (Item,)),
+        (migrations.FileFieldsToFilesTableMigration, (Item,)),
     )
 
     # Used for template substitution performance.

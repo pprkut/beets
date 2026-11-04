@@ -179,6 +179,8 @@ class TestRemove(PytestItemHelper):
         item_in_db.remove()
         c = self.lib._connection().execute("select * from items")
         assert c.fetchone() is None
+        c = self.lib._connection().execute("select * from files")
+        assert c.fetchone() is None
 
 
 class TestGetSet(PytestItemHelper):
@@ -1432,10 +1434,8 @@ class TestPathString(PytestItemHelper):
 
     def test_unicode_in_database_becomes_bytestring(self, item_in_db):
         self.lib._connection().execute(
-            """
-        update items set path=? where id=?
-        """,
-            (item_in_db.id, "somepath"),
+            "update files set path=? where item_id=?",
+            ("somepath", item_in_db.id),
         )
         assert isinstance(self.get_first_item().path, bytes)
 
@@ -1508,7 +1508,7 @@ class TestPathString(PytestItemHelper):
         item_in_db.store()
         stored_path = (
             self.lib._connection()
-            .execute("select path from items where id=?", (item_in_db.id,))
+            .execute("select path from files where item_id=?", (item_in_db.id,))
             .fetchone()[0]
         )
         album = self.lib.add_album([item_in_db])

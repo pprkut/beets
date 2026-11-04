@@ -562,7 +562,10 @@ class TestRelatedQueries:
             album_name = f"Album{album_idx}"
             items = [
                 helper.create_item(
-                    album=album_name, title=f"{album_name} Item{idx}"
+                    album=album_name,
+                    title=f"{album_name} Item{idx}",
+                    format="FLAC" if album_idx == 1 else "MP3",
+                    bitrate=album_idx * 1000 + idx,
                 )
                 for idx in range(1, 3)
             ]
@@ -600,11 +603,27 @@ class TestRelatedQueries:
                 ["Album1"],
                 id="query-field-common-to-album-and-item",
             ),
+            _p(
+                "format:FLAC",
+                ["Album1 Item1", "Album1 Item2"],
+                ["Album1"],
+                id="match-album-with-file-field-query",
+            ),
+            _p(
+                "format:MP3 artpath::Album2",
+                ["Album2 Item1", "Album2 Item2"],
+                ["Album2"],
+                id="match-items-with-file-and-album-field-query",
+            ),
         ],
     )
     def test_related_query(self, lib, q, expected_titles, expected_albums):
         assert {i.album for i in lib.albums(q)} == set(expected_albums)
         assert {i.title for i in lib.items(q)} == set(expected_titles)
+
+    def test_sort_albums_by_file_field(self, lib):
+        albums = [a.album for a in lib.albums("bitrate-")]
+        assert list(dict.fromkeys(albums)) == ["Album2", "Album1"]
 
 
 class TestHasCoverArtQuery:

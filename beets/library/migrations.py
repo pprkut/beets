@@ -16,7 +16,7 @@ from beets.util import chunks, unique_list
 from beets.util.lyrics import INSTRUMENTAL_LYRICS, Lyrics
 
 if TYPE_CHECKING:
-    from beets.dbcore.db import Model
+    from beets.dbcore.db import Model, Transaction
     from beets.library import Library
 
 
@@ -327,3 +327,96 @@ class InstrumentalLyricsInFlexFieldMigration(Migration):
             )
 
         ui.print_(f"Migration complete: {total} of {total} {table} updated")
+
+
+class FileFieldsToFilesTableMigration(Migration):
+    """Move the fields describing an item's media file to the files table.
+
+    Each item gets one row in the files table holding its file fields, and
+    the old columns are removed from the items table. The database is
+    vacuumed afterwards, since removing the columns leaves the space of
+    the old table unused.
+    """
+
+    def _migrate_data(
+        self, model_cls: type[Model], current_fields: set[str]
+    ) -> None:
+        joined = model_cls._joined
+        assert joined, f"{model_cls.__name__} has no joined table"
+        fields = sorted(model_cls._joined_fields() & current_fields)
+        if not fields:
+            return
+
+        table, files_table = model_cls._table, joined.model._table
+        columns = ", ".join(fields)
+        with self.db.transaction() as tx:
+            total = tx.query(f"SELECT COUNT(*) FROM {table}")[0][0]
+            if total:
+                ui.print_(f"Moving file fields of {total} {table}...")
+            tx.mutate(
+                f"""
+                INSERT OR IGNORE INTO {files_table}
+                    ({joined.foreign_key}, {columns})
+                SELECT id, {columns} FROM {table}
+                """
+            )
+            self._drop_columns(tx, table, set(fields))
+
+        # Return the space of the old table to the file system. This must
+        # run after the changes above are committed.
+        with self.db.transaction() as tx:
+            tx.mutate("VACUUM")
+
+        self.db.db_tables[table]["columns"] -= set(fields)
+        if total:
+            ui.print_(f"Migration complete: {total} {table} updated")
+
+    @staticmethod
+    def _drop_columns(tx: Transaction, table: str, names: set[str]) -> None:
+        """Recreate the table without the given columns.
+
+        Unlike ``ALTER TABLE ... DROP COLUMN``, this works with SQLite
+        versions before 3.35.0, and it rewrites the table only once.
+        """
+        kept = [
+            column
+            for column in tx.query(f"PRAGMA table_info({table})")
+            if column["name"] not in names
+        ]
+        definitions = ", ".join(
+            " ".join(
+                part
+                for part in (
+                    c["name"],
+                    c["type"],
+                    "PRIMARY KEY" if c["pk"] else "",
+                    "NOT NULL" if c["notnull"] else "",
+                    f"DEFAULT {c['dflt_value']}" if c["dflt_value"] else "",
+                )
+                if part
+            )
+            for c in kept
+        )
+        indices = [
+            index["sql"]
+            for index in tx.query(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL",
+                (table,),
+            )
+            if not names
+            & {
+                c["name"]
+                for c in tx.query(f"PRAGMA index_info({index['name']})")
+            }
+        ]
+
+        columns = ", ".join(c["name"] for c in kept)
+        tx.mutate(f"CREATE TABLE {table}_new ({definitions})")
+        tx.mutate(
+            f"INSERT INTO {table}_new ({columns}) SELECT {columns} FROM {table}"
+        )
+        tx.mutate(f"DROP TABLE {table}")
+        tx.mutate(f"ALTER TABLE {table}_new RENAME TO {table}")
+        for sql in indices:
+            tx.mutate(sql)

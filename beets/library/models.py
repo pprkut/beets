@@ -126,7 +126,7 @@ class LibModel(dbcore.Model["Library"]):
         elif field in cls.all_db_fields and field not in cls._getters():
             sort_cls = sort.FixedFieldSort
             if field in cls.other_db_fields:
-                field = f"{cls._relation._table}.{field}"
+                field = cls._relation_column(field)
         else:
             # Flexible or computed.
             sort_cls = sort.SlowFieldSort
@@ -157,8 +157,18 @@ class LibModel(dbcore.Model["Library"]):
             # an OperationalError if we try to use it in a query.
             # Using an explicit table name resolves this.
             field = f"{cls._table}.{field}"
+        elif field in cls.other_db_fields:
+            field = cls._relation_column(field)
 
         return query_cls(field, pattern, fast)
+
+    @classmethod
+    def _relation_column(cls, field: str) -> str:
+        """Return the qualified column of a field of the related model."""
+        relation = cls._relation
+        if (joined := relation._joined) and field in relation._joined_fields():
+            return f"{joined.model._table}.{field}"
+        return f"{relation._table}.{field}"
 
     @classmethod
     def any_field_query(
@@ -362,9 +372,12 @@ class Album(LibModel):
         Use LEFT join to select all albums, including those that do not have
         any items.
         """
+        # Join the item tables directly rather than through `Item._source()`:
+        # SQLite would build the whole subquery on every album query.
         return (
             f"LEFT JOIN {cls._relation._table} "
-            f"ON {cls._table}.id = {cls._relation._table}.album_id"
+            f"ON {cls._table}.id = {cls._relation._table}.album_id "
+            f"{cls._relation._joined_join()}"
         )
 
     @property
@@ -667,6 +680,46 @@ class Album(LibModel):
         return sum(item.length for item in self.items())
 
 
+class File(dbcore.Model["Library"]):
+    """The media file holding the audio of an :class:`Item`.
+
+    This stores what belongs to the file rather than to the track: its
+    location, modification time, and the audio properties that cannot be
+    written as tags.
+
+    Each item has one file. Its fields are accessed through the item
+    (``item.path``, ``item.bitrate``, ...) and stored by ``item.store()``.
+    """
+
+    item_id: int | None
+
+    _table = "files"
+    _flex_table = "file_attributes"
+    _field_names: ClassVar[set[str]] = {
+        "bitdepth",
+        "bitrate",
+        "bitrate_mode",
+        "channels",
+        "encoder_info",
+        "encoder_settings",
+        "format",
+        "id",
+        "item_id",
+        "length",
+        "mtime",
+        "path",
+        "samplerate",
+    }
+    _fields: ClassVar[dict[str, types.Type]] = {
+        f: TYPE_BY_FIELD[f] for f in sorted(_field_names)
+    }
+    _indices = (dbcore.Index("idx_file_item_id", ("item_id",), unique=True),)
+
+    @classmethod
+    def _getters(cls) -> dict[str, Callable[[Self], object]]:
+        return {}
+
+
 class Item(LibModel):
     """Represent a song or track."""
 
@@ -674,6 +727,7 @@ class Item(LibModel):
 
     _table = "items"
     _flex_table = "item_attributes"
+    _joined = dbcore.JoinedTable(File, "item_id")
     _field_names: ClassVar[set[str]] = (Album._field_names - {"artpath"}) | {
         "acoustid_fingerprint",
         "acoustid_id",
