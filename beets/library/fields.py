@@ -59,6 +59,7 @@ TYPE_BY_FIELD: dict[str, types.Type] = {
     "initial_key": types.MusicalKey(),
     "isrc": types.STRING,
     "item_id": types.FOREIGN_ID,
+    "kind": types.STRING,
     "label": types.STRING,
     "language": types.STRING,
     "length": types.DurationType(),

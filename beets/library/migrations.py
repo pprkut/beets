@@ -349,15 +349,19 @@ class FileFieldsToFilesTableMigration(Migration):
 
         table, files_table = model_cls._table, joined.model._table
         columns = ", ".join(fields)
+        where_columns = "".join(f"{c}, " for c in joined.where)
+        where_values = "".join("?, " for _ in joined.where)
         with self.db.transaction() as tx:
             total = tx.query(f"SELECT COUNT(*) FROM {table}")[0][0]
             if total:
                 ui.print_(f"Moving file fields of {total} {table}...")
             tx.mutate(
                 f"""
-                INSERT INTO {files_table} ({joined.foreign_key}, {columns})
-                SELECT id, {columns} FROM {table}
-                """
+                INSERT INTO {files_table}
+                    ({joined.foreign_key}, {where_columns}{columns})
+                SELECT id, {where_values}{columns} FROM {table}
+                """,
+                list(joined.where.values()),
             )
             self._drop_columns(tx, table, set(fields))
 

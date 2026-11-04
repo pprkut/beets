@@ -636,6 +636,7 @@ class JoinedModelFixture(ModelFixture1):
     _fields: ClassVar[dict[str, dbcore.types.Type]] = {
         "id": dbcore.types.PRIMARY_ID,
         "owner_id": dbcore.types.FOREIGN_ID,
+        "kind": dbcore.types.STRING,
         "joined_one": dbcore.types.INTEGER,
         "joined_two": dbcore.types.STRING,
     }
@@ -648,7 +649,9 @@ class OwnerModelFixture(ModelFixture1):
         "joined_one": dbcore.types.INTEGER,
         "joined_two": dbcore.types.STRING,
     }
-    _joined = dbcore.JoinedTable(JoinedModelFixture, "owner_id")
+    _joined = dbcore.JoinedTable(
+        JoinedModelFixture, "owner_id", {"kind": "main"}
+    )
 
 
 class DatabaseFixtureJoined(dbcore.Database):
@@ -686,8 +689,8 @@ class TestJoinedTable:
 
         assert self.rows(db, "SELECT id, field_one FROM test") == [(1, 1)]
         assert self.rows(
-            db, "SELECT owner_id, joined_one, joined_two FROM joined"
-        ) == [(1, 2, "x")]
+            db, "SELECT owner_id, kind, joined_one, joined_two FROM joined"
+        ) == [(1, "main", 2, "x")]
         loaded = db._get(OwnerModelFixture, model.id)
         assert loaded.field_one == 1
         assert loaded.joined_one == 2
@@ -717,6 +720,23 @@ class TestJoinedTable:
 
         assert db._get(OwnerModelFixture, 1).joined_one == 5
 
+    def test_other_rows_of_owner_are_ignored(self, db):
+        model = OwnerModelFixture(joined_one=2)
+        model.add(db)
+        with db.transaction() as tx:
+            tx.mutate(
+                "INSERT INTO joined (owner_id, kind, joined_one) "
+                "VALUES (?, 'other', 9)",
+                (model.id,),
+            )
+
+        assert [m.joined_one for m in db._get_results(OwnerModelFixture)] == [2]
+        model.joined_one = 3
+        model.store()
+        assert self.rows(
+            db, "SELECT kind, joined_one FROM joined ORDER BY kind"
+        ) == [("main", 3), ("other", 9)]
+
     def test_query_and_sort_on_joined_field(self, db):
         for value in (3, 1, 2):
             OwnerModelFixture(field_one=value, joined_one=value * 10).add(db)
@@ -733,6 +753,11 @@ class TestJoinedTable:
         model.add(db)
         other = OwnerModelFixture(joined_one=3)
         other.add(db)
+        with db.transaction() as tx:
+            tx.mutate(
+                "INSERT INTO joined (owner_id, kind) VALUES (?, 'other')",
+                (model.id,),
+            )
         dbcore.Model.remove(model)
 
         assert self.rows(db, "SELECT owner_id FROM joined") == [(other.id,)]

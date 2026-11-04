@@ -425,11 +425,11 @@ class TestFileFieldsToFilesTableMigration(MigrationTestHelper):
         freelist = self.lib._connection().execute("PRAGMA freelist_count")
         assert freelist.fetchone()[0] == 0
         rows = self.lib._connection().execute(
-            "SELECT item_id, format, bitrate FROM files ORDER BY item_id"
+            "SELECT item_id, kind, format, bitrate FROM files ORDER BY item_id"
         )
         assert [tuple(r) for r in rows] == [
-            (item.id, "FLAC", 900000),
-            (item.id + 1, "MP3", 0),
+            (item.id, "audio", "FLAC", 900000),
+            (item.id + 1, "audio", "MP3", 0),
         ]
 
         migrated = self.lib.get_item(item.id)

@@ -18,6 +18,7 @@ from functools import cached_property
 from itertools import islice
 from pathlib import Path
 from sqlite3 import Connection
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -345,6 +346,7 @@ class Model(ABC, Generic[D]):
         return frozenset(cls._fields.keys() & joined.model._fields.keys()) - {
             "id",
             joined.foreign_key,
+            *joined.where,
         }
 
     @classmethod
@@ -360,10 +362,9 @@ class Model(ABC, Generic[D]):
         """Return the join clause that adds the joined table, if any."""
         if not (joined := cls._joined):
             return ""
-        table, joined_table = cls._table, joined.model._table
         return (
-            f"LEFT JOIN {joined_table} "
-            f"ON {joined_table}.{joined.foreign_key} = {table}.id"
+            f"LEFT JOIN {joined.model._table} "
+            f"ON {joined.condition(f'{cls._table}.id')}"
         )
 
     @classmethod
@@ -700,18 +701,22 @@ class Model(ABC, Generic[D]):
 
             # Joined table update. The row is created if it does not exist.
             if joined_values and (joined := self._joined):
-                table, key = joined.model._table, joined.foreign_key
+                table, condition = joined.model._table, joined.condition("?")
                 assignments = ",".join(f"{k}=?" for k in joined_values)
                 tx.mutate(
-                    f"UPDATE {table} SET {assignments} WHERE {key}=?",
+                    f"UPDATE {table} SET {assignments} WHERE {condition}",
                     [*joined_values.values(), self.id],
                 )
-                columns = ",".join([key, *joined_values])
+                values = {
+                    joined.foreign_key: self.id,
+                    **joined.where,
+                    **joined_values,
+                }
                 tx.mutate(
-                    f"INSERT INTO {table} ({columns}) "
-                    f"SELECT {','.join('?' * (len(joined_values) + 1))} "
-                    f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {key}=?)",
-                    [self.id, *joined_values.values(), self.id],
+                    f"INSERT INTO {table} ({','.join(values)}) "
+                    f"SELECT {','.join('?' * len(values))} "
+                    f"WHERE NOT EXISTS (SELECT 1 FROM {table} WHERE {condition})",
+                    [*values.values(), self.id],
                 )
 
             # Modified/added flexible attributes.
@@ -1609,8 +1614,10 @@ class JoinedTable(NamedTuple):
     """Describe a table that stores some of another model's fixed fields.
 
     `model` describes the table, and its `foreign_key` column holds the id
-    of the object a row belongs to. Each object has at most one row in the
-    table.
+    of the object a row belongs to. An object may own several rows; `where`
+    lists the column values that identify the one holding its fields. Rows
+    inserted for the object get these values, and all rows it owns are
+    deleted with it. Each object has at most one such row.
 
     The owning model lists the shared fields in its own `_fields`, so they
     behave like any other fixed field: they are loaded with the object,
@@ -1620,3 +1627,15 @@ class JoinedTable(NamedTuple):
 
     model: type[Model]
     foreign_key: str
+    where: Mapping[str, str] = MappingProxyType({})
+
+    def condition(self, owner_id: str) -> str:
+        """Return the SQL condition selecting the row that holds the fields
+        of the object with the id given by the `owner_id` SQL expression.
+        """
+        table = self.model._table
+        conditions = [f"{table}.{self.foreign_key} = {owner_id}"]
+        for column, value in self.where.items():
+            literal = value.replace("'", "''")
+            conditions.append(f"{table}.{column} = '{literal}'")
+        return " AND ".join(conditions)

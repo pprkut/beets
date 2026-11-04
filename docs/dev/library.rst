@@ -96,7 +96,8 @@ expose the file fields like any other field, and ``item.store()`` writes them to
 the files table, so code working with items doesn't need to know where a field
 is stored. This is declared by ``Item._joined``, which the
 :class:`beets.dbcore.Model` base class uses to load, store, query and sort these
-fields. For now, each item has at most one file.
+fields. The ``kind`` column of the files table tells what a file holds. For now,
+every file holds an item's audio, and each item has at most one file.
 
 To read and write a file's tags, we use the MediaFile_ library. To make changes
 to either the database or the tags on a file, you update an item's fields (e.g.,

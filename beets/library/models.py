@@ -689,9 +689,13 @@ class File(dbcore.Model["Library"]):
     These may differ between files of the same track, for example when the
     track is kept in several formats or split into several parts.
 
-    Each item has one file. Its fields are accessed through the item
-    (``item.path``, ``item.bitrate``, ...) and stored by ``item.store()``.
+    `kind` tells what the file holds. For now, all files hold an item's
+    audio, and each item has one such file. Its fields are accessed through
+    the item (``item.path``, ``item.bitrate``, ...) and stored by
+    ``item.store()``.
     """
+
+    KIND_AUDIO = "audio"
 
     item_id: int | None
 
@@ -700,6 +704,7 @@ class File(dbcore.Model["Library"]):
     _field_names: ClassVar[set[str]] = {
         "id",
         "item_id",
+        "kind",
         # Location.
         "mtime",
         "path",
@@ -742,7 +747,7 @@ class Item(LibModel):
 
     _table = "items"
     _flex_table = "item_attributes"
-    _joined = dbcore.JoinedTable(File, "item_id")
+    _joined = dbcore.JoinedTable(File, "item_id", {"kind": File.KIND_AUDIO})
     _field_names: ClassVar[set[str]] = (Album._field_names - {"artpath"}) | {
         "acoustid_fingerprint",
         "acoustid_id",
