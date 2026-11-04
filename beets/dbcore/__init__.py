@@ -2,7 +2,7 @@
 Library.
 """
 
-from .db import Database, Index, Model, Results
+from .db import Database, Index, JoinedTable, Model, Results
 from .query import (
     AndQuery,
     FieldQuery,
@@ -24,6 +24,7 @@ __all__ = [
     "FieldQuery",
     "Index",
     "InvalidQueryError",
+    "JoinedTable",
     "MatchQuery",
     "Model",
     "OrQuery",

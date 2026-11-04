@@ -217,6 +217,33 @@ class LazyDict(UserDict[str, Any]):
         return default
 
 
+_ModelT = TypeVar("_ModelT", bound="type[Model]")
+_R = TypeVar("_R")
+
+
+def _cached_by_fields(
+    getter: Callable[[_ModelT], _R],
+) -> Callable[[_ModelT], _R]:
+    """Cache a classmethod deriving its result from `_fields` and `_joined`.
+
+    The result is computed again once either attribute is replaced, as
+    tests do to simulate older database schemas.
+    """
+    cache: dict[type[Model], tuple[object, object, _R]] = {}
+
+    @functools.wraps(getter)
+    def wrapper(cls: _ModelT) -> _R:
+        fields, joined = cls._fields, cls._joined
+        cached = cache.get(cls)
+        if cached and cached[0] is fields and cached[1] is joined:
+            return cached[2]
+        value = getter(cls)
+        cache[cls] = (fields, joined, value)
+        return value
+
+    return wrapper
+
+
 # Abstract base for model classes.
 
 
@@ -299,10 +326,68 @@ class Model(ABC, Generic[D]):
     to the database.
     """
 
+    _joined: ClassVar[JoinedTable | None] = None
+    """A table, other than `_table`, that stores some of this model's
+    fixed fields.
+    """
+
     @cached_classproperty
     def _relation(cls) -> type[Model]:
         """The model that this model is closely related to."""
         return cls  # type: ignore[return-value]
+
+    @classmethod
+    @_cached_by_fields
+    def _joined_fields(cls) -> frozenset[str]:
+        """Fixed fields that are stored in the joined table."""
+        if not (joined := cls._joined):
+            return frozenset()
+        return frozenset(cls._fields.keys() & joined.model._fields.keys()) - {
+            "id",
+            joined.foreign_key,
+        }
+
+    @classmethod
+    @_cached_by_fields
+    def _table_fields(cls) -> dict[str, types.Type]:
+        """Fixed fields that are stored in this model's own table."""
+        joined_fields = cls._joined_fields()
+        return {k: v for k, v in cls._fields.items() if k not in joined_fields}
+
+    @classmethod
+    @_cached_by_fields
+    def _joined_join(cls) -> str:
+        """Return the join clause that adds the joined table, if any."""
+        if not (joined := cls._joined):
+            return ""
+        table, joined_table = cls._table, joined.model._table
+        return (
+            f"LEFT JOIN {joined_table} "
+            f"ON {joined_table}.{joined.foreign_key} = {table}.id"
+        )
+
+    @classmethod
+    @_cached_by_fields
+    def _source(cls) -> str:
+        """Return the FROM clause expression that provides this model's rows.
+
+        This is the model's table, or, if some fields live in a joined table,
+        a subquery joining both under the model's table name. Either way, it
+        has one row per object with a column for every fixed field.
+        """
+        if not (joined := cls._joined):
+            return cls._table
+
+        table, joined_table = cls._table, joined.model._table
+        columns = ", ".join(
+            [
+                *(f"{table}.{f}" for f in cls._table_fields()),
+                *(f"{joined_table}.{f}" for f in sorted(cls._joined_fields())),
+            ]
+        )
+        return (
+            f"(SELECT {columns} FROM {table} {cls._joined_join()}) AS {table}"
+        )
 
     @cached_classproperty
     def relation_join(cls) -> str:
@@ -594,22 +679,35 @@ class Model(ABC, Generic[D]):
         if fields is None:
             fields = self._fields
 
-        # Build assignments for query.
-        assignments = []
-        subvars: list[SQLiteType] = []
+        # Collect dirty fixed fields, split by the table they are stored in.
+        joined_fields = self._joined_fields()
+        own_values: dict[str, SQLiteType] = {}
+        joined_values: dict[str, SQLiteType] = {}
         for key in fields:
             if key != "id" and key in self._fields and key in self._dirty:
                 self._dirty.remove(key)
-                assignments.append(f"{key}=?")
-                value = self._type(key).to_sql(self[key])
-                subvars.append(value)
+                values = joined_values if key in joined_fields else own_values
+                values[key] = self._type(key).to_sql(self[key])
 
         with self.db.transaction() as tx:
             # Main table update.
-            if assignments:
-                query = f"UPDATE {self._table} SET {','.join(assignments)} WHERE id=?"
-                subvars.append(self.id)
-                tx.mutate(query, subvars)
+            if own_values:
+                assignments = ",".join(f"{k}=?" for k in own_values)
+                tx.mutate(
+                    f"UPDATE {self._table} SET {assignments} WHERE id=?",
+                    [*own_values.values(), self.id],
+                )
+
+            # Joined table update. The row is created if it does not exist.
+            if joined_values and (joined := self._joined):
+                columns = [joined.foreign_key, *joined_values]
+                updates = ",".join(f"{k}=excluded.{k}" for k in joined_values)
+                tx.mutate(
+                    f"INSERT INTO {joined.model._table} ({','.join(columns)}) "
+                    f"VALUES ({','.join('?' * len(columns))}) "
+                    f"ON CONFLICT ({joined.foreign_key}) DO UPDATE SET {updates}",
+                    [self.id, *joined_values.values()],
+                )
 
             # Modified/added flexible attributes.
             for key, value in self._values_flex.items():
@@ -648,6 +746,20 @@ class Model(ABC, Generic[D]):
     def remove(self) -> None:
         """Remove the object's associated rows from the database."""
         with self.db.transaction() as tx:
+            if joined := self._joined:
+                table, flex_table = (
+                    joined.model._table,
+                    joined.model._flex_table,
+                )
+                tx.mutate(
+                    f"DELETE FROM {flex_table} WHERE entity_id IN "
+                    f"(SELECT id FROM {table} WHERE {joined.foreign_key}=?)",
+                    (self.id,),
+                )
+                tx.mutate(
+                    f"DELETE FROM {table} WHERE {joined.foreign_key}=?",
+                    (self.id,),
+                )
             tx.mutate(f"DELETE FROM {self._table} WHERE id=?", (self.id,))
             tx.mutate(
                 f"DELETE FROM {self._flex_table} WHERE entity_id=?", (self.id,)
@@ -1137,7 +1249,7 @@ class Database:
         # Set up database schema.
         self._ensure_migration_state_table()
         for model_cls in self._models:
-            self._make_table(model_cls._table, model_cls._fields)
+            self._make_table(model_cls._table, model_cls._table_fields())
             self._make_attribute_table(model_cls._flex_table)
             self._create_indices(model_cls._table, model_cls._indices)
 
@@ -1346,8 +1458,9 @@ class Database:
         """Create indices for the given table if they don't exist."""
         with self.transaction() as tx:
             for index in indices:
+                unique = "UNIQUE " if index.unique else ""
                 tx.script(
-                    f"CREATE INDEX IF NOT EXISTS {index.name} "
+                    f"CREATE {unique}INDEX IF NOT EXISTS {index.name} "
                     f"ON {table} ({', '.join(index.columns)});"
                 )
 
@@ -1421,7 +1534,7 @@ class Database:
                 sql_limit = limit
 
         table = model_cls._table
-        _from = table
+        _from = model_cls._source()
         if query.field_names & model_cls.other_db_fields:
             _from += f" {model_cls.relation_join}"
 
@@ -1486,3 +1599,21 @@ class Index(NamedTuple):
 
     name: str
     columns: tuple[str, ...]
+    unique: bool = False
+
+
+class JoinedTable(NamedTuple):
+    """Describe a table that stores some of another model's fixed fields.
+
+    `model` describes the table, and its `foreign_key` column holds the id
+    of the object a row belongs to. The column needs a unique index: each
+    object has at most one row in the table.
+
+    The owning model lists the shared fields in its own `_fields`, so they
+    behave like any other fixed field: they are loaded with the object,
+    can be queried and sorted on, and are written to the joined table on
+    `store`.
+    """
+
+    model: type[Model]
+    foreign_key: str

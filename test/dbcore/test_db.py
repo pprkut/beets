@@ -628,3 +628,109 @@ class TestException:
 
         with pytest.raises(DBCustomFunctionError), db.transaction() as tx:
             tx.query("select * from test where plz_raise()")
+
+
+class JoinedModelFixture(ModelFixture1):
+    _table = "joined"
+    _flex_table = "joinedflex"
+    _fields: ClassVar[dict[str, dbcore.types.Type]] = {
+        "id": dbcore.types.PRIMARY_ID,
+        "owner_id": dbcore.types.FOREIGN_ID,
+        "joined_one": dbcore.types.INTEGER,
+        "joined_two": dbcore.types.STRING,
+    }
+    _indices = (Index("joined_owner_id", ("owner_id",), unique=True),)
+
+
+class OwnerModelFixture(ModelFixture1):
+    _fields: ClassVar[dict[str, dbcore.types.Type]] = {
+        **ModelFixture1._fields,
+        "joined_one": dbcore.types.INTEGER,
+        "joined_two": dbcore.types.STRING,
+    }
+    _joined = dbcore.JoinedTable(JoinedModelFixture, "owner_id")
+
+
+class DatabaseFixtureJoined(dbcore.Database):
+    _models = (OwnerModelFixture, JoinedModelFixture)
+
+
+class TestJoinedTable:
+    @pytest.fixture
+    def db(self):
+        db = DatabaseFixtureJoined(":memory:")
+        yield db
+        db._connection().close()
+
+    @staticmethod
+    def rows(db, sql):
+        return [tuple(r) for r in db._connection().execute(sql)]
+
+    def test_fields_are_split_between_tables(self, db):
+        assert OwnerModelFixture._joined_fields() == {
+            "joined_one",
+            "joined_two",
+        }
+        assert db.db_tables["test"]["columns"] == {
+            "id",
+            "field_one",
+            "field_two",
+        }
+        assert self.rows(db, "PRAGMA index_list(joined)") == [
+            (0, "joined_owner_id", 1, "c", 0)
+        ]
+
+    def test_add_and_load(self, db):
+        model = OwnerModelFixture(field_one=1, joined_one=2, joined_two="x")
+        model.add(db)
+
+        assert self.rows(db, "SELECT id, field_one FROM test") == [(1, 1)]
+        assert self.rows(
+            db, "SELECT owner_id, joined_one, joined_two FROM joined"
+        ) == [(1, 2, "x")]
+        loaded = db._get(OwnerModelFixture, model.id)
+        assert loaded.field_one == 1
+        assert loaded.joined_one == 2
+        assert loaded.joined_two == "x"
+
+    def test_store_updates_joined_row(self, db):
+        model = OwnerModelFixture(joined_one=2)
+        model.add(db)
+        model.joined_one = 3
+        model.store()
+
+        assert self.rows(db, "SELECT owner_id, joined_one FROM joined") == [
+            (1, 3)
+        ]
+
+    def test_store_creates_missing_joined_row(self, db):
+        with db.transaction() as tx:
+            tx.mutate("INSERT INTO test (field_one) VALUES (1)")
+
+        model = db._get(OwnerModelFixture, 1)
+        assert model.field_one == 1
+        assert model.joined_one == 0
+        model.joined_one = 5
+        model.store()
+
+        assert db._get(OwnerModelFixture, 1).joined_one == 5
+
+    def test_query_and_sort_on_joined_field(self, db):
+        for value in (3, 1, 2):
+            OwnerModelFixture(field_one=value, joined_one=value * 10).add(db)
+
+        results = db._get_results(
+            OwnerModelFixture,
+            query.NumericQuery("joined_one", "15.."),
+            sort.FixedFieldSort("joined_one", ascending=False),
+        )
+        assert [m.joined_one for m in results] == [30, 20]
+
+    def test_remove_deletes_joined_row(self, db):
+        model = OwnerModelFixture(joined_one=2)
+        model.add(db)
+        other = OwnerModelFixture(joined_one=3)
+        other.add(db)
+        dbcore.Model.remove(model)
+
+        assert self.rows(db, "SELECT owner_id FROM joined") == [(other.id,)]
