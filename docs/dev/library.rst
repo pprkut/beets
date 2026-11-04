@@ -80,9 +80,21 @@ item because, one day, beets might support non-music media.) An item can either
 be purely abstract, in which case it's just a bag of metadata fields, or it can
 have an associated file (indicated by ``item.path``).
 
-In terms of the underlying SQLite database, items are backed by a single table
-called items with one column per metadata fields. The metadata fields currently
-in use are listed in ``library.py`` in ``Item._fields``.
+In terms of the underlying SQLite database, items are backed by two tables. The
+items table has one column per metadata field describing the track. The fields
+describing the media file itself are stored in the files table instead, in the
+row whose ``item_id`` column refers to the item. These are the file's ``path``
+and ``mtime``, and the audio properties that cannot be written as tags, such as
+``format``, ``bitrate`` and ``length``. Flexible attributes are stored in the
+item_attributes table.
+
+The metadata fields currently in use are listed in ``models.py``: all of them in
+``Item._fields``, and those stored in the files table in ``File._fields``. Items
+expose the file fields like any other field, and ``item.store()`` writes them to
+the files table, so code working with items doesn't need to know where a field
+is stored. This is declared by ``Item._joined``, which the
+:class:`beets.dbcore.Model` base class uses to load, store, query and sort these
+fields. For now, each item has at most one file.
 
 To read and write a file's tags, we use the MediaFile_ library. To make changes
 to either the database or the tags on a file, you update an item's fields (e.g.,
